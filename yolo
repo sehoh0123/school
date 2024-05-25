@@ -1,0 +1,91 @@
+#객체 탐지 모델 불러오기
+model_yolo = YOLO('best_final.pt')
+
+#앞서 만든 데이터세트별로 객체 탐지 결과 저장
+results_train = model_yolo.predict(source=train_images.filepaths, save=True)
+results_val = model_yolo.predict(source=val_images.filepaths, save=True)
+results_test = model_yolo.predict(source=test_images.filepaths, save=True)
+results_lst=[results_train,results_val,results_test]
+
+#탐지된 객체를 대분류로 묶기 위한 변수 설정
+truck=['dump truck', 'mixed']
+plastering_tool=['Trowel', 'rainboot', 'plasterer shoe']
+brick=['brick','bricks']
+concrete=['concrete bag', 'basin']
+liquid_material=['plastic barrel', 'square can']
+merge_lst=[truck, plastering_tool, brick, concrete, liquid_material]
+merge_lst_name=['truck', 'plastering_tool', 'brick', 'concrete', 'liquid_material']
+
+#클래스 이름 나열
+class_name=[]
+for i in range (len(model_yolo.names)):
+  class_name.append(model_yolo.names[i])
+
+#results는 train or valid or test 데이터세트
+for results in results_lst:
+  #클래스 개수
+  lst=[]
+  #result는 사진 한장 한장
+  for result in results:
+    area_tensor=[]
+    for i in range (len(result.boxes.cls)):
+      area=result.boxes.xywh[i,2]*result.boxes.xywh[i,3]
+      area=area.cpu().numpy().tolist()
+      area_tensor.append(area)
+    area_tensor = tf.convert_to_tensor(area_tensor)
+    merged_tensor = np.vstack((result.boxes.cls.cpu(), area_tensor))
+    lst.append(merged_tensor)
+    #lst[i]는 사진 한장의 클래스와 면적에 대한 array
+  #클래스 별 개수
+  lst_final=[]
+  lst_flat=[]
+  #사진 한장 한장 반복문 실행
+  for num1 in range (len(results)):
+    #class_info는 클래스 개수를 저장하는 딕셔너리
+    class_info = {}
+
+    #탐지된 객체 하나씩 반복하면서 정보 저장
+    #lst[result][0]는 클래스 정보
+    for cls, area in zip(lst[num1][0], lst[num1][1]):
+        #탐지된 클래스에 대한 정보가 저장되어있지 않다면 Count:0으로 만들고 개수 추가
+        if cls not in class_info:
+            class_info[cls] = {
+                'Count': 0
+            }
+        class_info[cls]['Count'] += 1
+
+    #탐지된 클래스 외의 클래스들은 개수를 0으로 설정
+    for cls in range(0,len(model_yolo.names)):
+        if cls not in class_info:
+            class_info[cls] = {
+                'Count': 0
+            }
+
+    #앞서 추출된 클래스의 개수 정보들을 데이터프레임 형태로 변환
+    df = pd.DataFrame(class_info).T.reset_index().rename(columns={'index': 'Class'})
+    #클래스 값으로 정렬
+    df = df.sort_values('Class')
+    df['Class_name'] = class_name
+    df['Count'].reset_index(drop=True)
+    df = df.reset_index(drop=True)
+    #소분류의 클래스들을 대분류의 클래스로 객체 병합
+    for num2 in merge_lst:
+      count=0
+      for num3 in num2:
+        count += df['Count'][df.loc[df['Class_name'] == num3].index[0]]
+        df = df.drop(df.loc[df['Class_name'] == num3].index[0])
+      new_row = pd.DataFrame([{'Class': len(df), 'Count': count, 'Class_name': merge_lst_name[merge_lst.index(num2)]}])
+      df = pd.concat([df, new_row], ignore_index=True)
+    df = df.sort_values('Class_name')
+    
+    #데이터프레임->텐서
+    tensor1 = tf.convert_to_tensor(df['Count'].reset_index(drop=True), dtype=tf.float32)
+    flatten_tensor = tf.reshape(tensor1, [-1])
+    lst_final.append(tensor1)
+    lst_flat.append(flatten_tensor)
+  if results==results_train:
+    lst_train=lst_final
+  elif results==results_val:
+    lst_val=lst_final
+  elif results==results_test:
+    lst_test=lst_final
